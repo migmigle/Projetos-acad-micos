@@ -1,0 +1,445 @@
+# Análise com Regressão Logística e Análise Discriminante do Dataset "Waze Navigation App Dataset"
+# A base de dados "Waze Navigation App Dataset" está disponível na plataforma Kaggle. Sendo 'label' uma variável dependente, foram aplicadas regressão logística e análise discriminante para verificar a qualidade do modelo.
+# Realizado por Leandro Yuuki, Miguel Paixão e Ygor Reis - alunos da PUC-SP de Ciências de Dados e Inteligência Artificial (3º semestre)
+##Regressão Logística
+
+# importa biblioteca pandas
+import pandas as pd
+# importa biblioteca numpy
+import numpy as np
+# importa biblioteca statsmodels
+import statsmodels.api as sm
+
+# local do arquivo
+Caminho='/content/waze_app_dataset.csv'
+
+ #Traz o arquivo para o Python
+df=pd.read_csv(Caminho)
+df.head()
+
+#Cria variáveis Dummy
+
+dummy_label = pd.get_dummies(df['label'], prefix='label', drop_first=True)
+
+print(dummy_label)
+
+dummy_device = pd.get_dummies(df['device'], prefix='device', drop_first=True)
+
+print(dummy_device)
+
+# Concatenando as variáveis dummy com o DataFrame original
+df = pd.concat([df, dummy_label, dummy_device], axis=1)
+
+# Removendo as colunas originais
+df = df.drop(['label', 'device'], axis=1)
+
+# Imprimindo o DataFrame atualizado
+print(df)
+
+# Transformar label_retained e device_iPhone em 0 ou 1
+df['label_retained'] = df['label_retained'].astype(int)
+df['device_iPhone'] = df['device_iPhone'].astype(int)
+print(df)
+
+def stepwise_logistic_regression(X, y,
+                                 initial_list=[],
+                                 threshold_in=0.01,
+                                 threshold_out=0.05,
+                                 verbose=True):
+    included = list(initial_list)
+    while True:
+        changed = False
+        # Forward step
+        excluded = list(set(X.columns) - set(included))
+        new_pval = pd.Series(index=excluded)
+        for new_column in excluded:
+            model = sm.Logit(y, sm.add_constant(pd.DataFrame(X[included + [new_column]]))).fit(disp=0)
+            new_pval[new_column] = model.pvalues[new_column]
+        best_pval = new_pval.min()
+        if best_pval < threshold_in:
+            best_feature = new_pval.idxmin()
+            included.append(best_feature)
+            changed = True
+            if verbose:
+                print('Adicionando variável: {} com p-value {:.6}'.format(best_feature, best_pval))
+
+        # Backward step
+        model = sm.Logit(y, sm.add_constant(pd.DataFrame(X[included]))).fit(disp=0)
+        pvalues = model.pvalues.iloc[1:]
+        worst_pval = pvalues.max()
+        if worst_pval > threshold_out:
+            changed = True
+            worst_feature = pvalues.idxmax()
+            included.remove(worst_feature)
+            if verbose:
+                print('Removendo variável: {} com p-value {:.6}'.format(worst_feature, worst_pval))
+        if not changed:
+            break
+    return included
+
+X = df.drop(columns=['ID', 'label_retained'])  # Variáveis preditoras - tira label_retained que é a resposta e ID que não é necessária
+y = df['label_retained']  # Variável resposta
+
+selected_features = stepwise_logistic_regression(X, y)
+
+print('Variáveis selecionadas:')
+print(selected_features)
+
+#Modelo de Regressão Logística pós Stepwise - somente as variáveis listadas acima
+from statsmodels.formula.api import logit
+modelo=logit('label_retained ~ activity_days+n_days_after_onboarding+total_navigations_fav1+drives+duration_minutes_drives', data=df).fit()
+
+modelo.summary()
+
+#Importa ferramentas para análise do modelo
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve
+
+from sklearn.metrics import roc_curve, auc, confusion_matrix
+from statsmodels.tools import add_constant
+
+# Adicione uma constante ao DataFrame X
+X_constant = add_constant(X[selected_features])
+
+# Calcula as probabilidades previstas
+y_pred_prob = modelo.predict(X_constant)
+
+# Calcula o FPR (Taxa de Falsos Positivos) e TPR (Taxa de Verdadeiros Positivos)
+fpr, tpr, thresholds = roc_curve(y, y_pred_prob)
+
+# Calcula a área sob a curva ROC (AUC)
+roc_auc = auc(fpr, tpr)
+
+# Curva ROC
+import matplotlib.pyplot as plt
+plt.figure()
+plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc)
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC)')
+plt.legend(loc="lower right")
+plt.show()
+
+
+from scipy.stats import chi2
+
+# Calcula a estatística do teste de Hosmer-Lemeshow
+hosmer_lemeshow_statistic = np.sum((y_pred_prob - y_pred_prob.mean())**2)
+
+# Define o número de grupos (bins) para o teste de Hosmer-Lemeshow
+num_groups = 10
+
+# Calcula os graus de liberdade
+df = num_groups - 2
+
+# Calcula o valor-p comparando a estatística do teste com a distribuição qui-quadrado
+p_value = 1 - chi2.cdf(hosmer_lemeshow_statistic, df)
+
+# Exibe o valor-p com três casas decimais
+print("Valor-p do teste de Hosmer-Lemeshow: {:.3f}".format(p_value))
+
+# Matriz de Confusão
+y_pred = (y_pred_prob > 0.5).astype(int)
+conf_matrix = confusion_matrix(y, y_pred)
+print("Matriz de Confusão:")
+print(conf_matrix)
+
+# Calcula a matriz de confusão
+conf_matrix = confusion_matrix(y, y_pred)
+
+# Calcula o total de observações
+total_observations = np.sum(conf_matrix)
+
+# Calcula o total de acertos (soma da diagonal principal)
+total_acertos = np.trace(conf_matrix)
+
+# Calcula o total de erros (subtrai o total de acertos do total de observações)
+total_erros = total_observations - total_acertos
+
+# Calcula a porcentagem de acertos e erros
+percent_acertos = (total_acertos / total_observations) * 100
+percent_erros = (total_erros / total_observations) * 100
+
+# Exibe os resultados
+print("Total de acertos:", total_acertos)
+print("Total de erros:", total_erros)
+print("Porcentagem de acertos: {:.2f}%".format(percent_acertos))
+print("Porcentagem de erros: {:.2f}%".format(percent_erros))
+
+# Calcula a estatística de Cox e Snell
+llf_null = -modelo.llnull
+llf_modelo = modelo.llf
+n = len(y)
+cox_snell_statistic = 1 - np.exp((2/n) * (llf_null - llf_modelo))
+
+# Exibe a estatística de Cox e Snell
+print("Estatística de Cox e Snell:", cox_snell_statistic)
+
+# Calcula a função de verossimilhança do modelo nulo (sem preditores)
+llf_null = modelo.llnull
+
+# Calcula a função de verossimilhança do modelo ajustado
+llf_modelo = modelo.llf
+
+# Calcula o número total de observações
+n = len(y)
+
+# Calcula a estatística de Nagelkerke
+R2_nagelkerke = 1 - (np.exp(-2 * (llf_null - llf_modelo) / n) / (1 - np.exp(llf_modelo * 2 / n)))
+
+# Exibe a estatística de Nagelkerke
+print("Estatística de Nagelkerke:", R2_nagelkerke)
+
+##Análise discriminante
+
+# Importando as bibliotecas necessárias
+from sklearn.datasets import load_iris
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+import pandas as pd
+import numpy as np
+# local do arquivo
+Caminho='/content/waze_app_dataset.csv'
+
+#Traz o arquivo para o Python
+df=pd.read_csv(Caminho)
+df.head()
+
+#Cria variáveis Dummy
+
+dummy_label = pd.get_dummies(df['label'], prefix='label', drop_first=True)
+
+print(dummy_label)
+
+dummy_device = pd.get_dummies(df['device'], prefix='device', drop_first=True)
+
+print(dummy_device)
+
+# Concatenando as variáveis dummy com o DataFrame original
+df = pd.concat([df, dummy_label, dummy_device], axis=1)
+
+# Removendo as colunas originais
+df = df.drop(['label', 'device'], axis=1)
+
+# Imprimindo o DataFrame atualizado
+print(df)
+
+# Transformar label_retained e device_iPhone em 0 ou 1
+df['label_retained'] = df['label_retained'].astype(int)
+df['device_iPhone'] = df['device_iPhone'].astype(int)
+print(df)
+
+# Separando as variáveis independentes (features) e a variável dependente (resposta)
+X = df.drop(columns=['ID', 'label_retained'])  # features - tira label_retained que é a resposta e ID que não é necessária
+y = df['label_retained']  # target
+
+# Criando o modelo de análise discriminante linear
+lda = LinearDiscriminantAnalysis()
+
+# Ajustando o modelo aos dados
+lda.fit(X, y)
+
+# Calculando a estatística de Wilks' Lambda
+wilks_lambda = lda.decision_function(X)
+
+# Calculando a matriz de classificação
+y_pred = lda.predict(X)
+conf_matrix = confusion_matrix(y, y_pred)
+
+# Obtendo os coeficientes de Fisher
+fisher_coefficients = lda.scalings_
+
+# Obtendo os autovalores
+eigenvalues = lda.explained_variance_ratio_
+
+# Obtendo as funções discriminantes
+discriminant_functions = lda.coef_
+
+# Obtendo os centroides de cada classe
+centroids = lda.means_
+
+
+# Exibindo as estatísticas calculadas
+print("Matriz de Classificação:\n", conf_matrix)
+print()
+print("Autovalores:\n", eigenvalues)
+print()
+
+# Exibindo os centroides
+print("Centroids")
+for i, centroid in enumerate(centroids):
+    print(f"Classe {i + 1}: {centroid}")
+print()
+## Exibindo os pesos das variáveis na função discriminante
+print("Pesos das variáveis na função discriminante:")
+for i, weight in enumerate(fisher_coefficients.T):
+    print(f"Função {i + 1}:")
+    for j, variable in enumerate(X.columns):
+        print(f"  {variable}: {weight[j]}")
+print()
+
+print("Pesos das variáveis em cada função discriminante de Fisher :")
+for i, discriminant_function in enumerate(discriminant_functions):
+    print(f"Função Discriminante {i + 1}:")
+    for j, variable in enumerate(X.columns):
+        print(f"  {variable}: {discriminant_function[j]}")
+print()
+
+
+# Examinando os coeficientes de Fisher
+fisher_coefficients = lda.scalings_
+
+# Calculando os valores absolutos dos coeficientes de Fisher
+abs_fisher_coefficients = np.abs(fisher_coefficients)
+
+# Normalizando os coeficientes de Fisher (opcional)
+normalized_fisher_coefficients = abs_fisher_coefficients / np.max(abs_fisher_coefficients)
+
+# Criando um dicionário para mapear cada variável ao seu coeficiente de Fisher ou valor normalizado
+variable_coefficients = dict(zip(X.columns, normalized_fisher_coefficients))
+
+# Ordenando as variáveis pelo valor dos coeficientes
+sorted_variable_coefficients = sorted(variable_coefficients.items(), key=lambda x: x[1][0], reverse=True)
+# Exibindo as variáveis mais discriminantes
+print("Variáveis mais discriminantes:")
+for variable, coefficient in sorted_variable_coefficients:
+    print(f"{variable}: {coefficient}")
+
+#Comparando as médias para os grupos
+
+from scipy.stats import f_oneway
+
+# Separando os dados em cada grupo
+group1 = df[df['label_retained'] == 0][['activity_days', 'driving_days', 'device_iPhone', 'drives', 'sessions', 'total_navigations_fav2', 'total_navigations_fav1', 'n_days_after_onboarding', \
+                                        'total_sessions', 'duration_minutes_drives', 'driven_km_drives']]
+group2 = df[df['label_retained'] == 1][['activity_days', 'driving_days', 'device_iPhone', 'drives', 'sessions', 'total_navigations_fav2', 'total_navigations_fav1', 'n_days_after_onboarding', \
+                                        'total_sessions', 'duration_minutes_drives', 'driven_km_drives']]
+
+# Calculando as médias para cada grupo
+means_group1 = group1.mean()
+means_group2 = group2.mean()
+
+# Comparando as médias
+if means_group1.equals(means_group1):
+    print("As médias dos grupos são iguais.")
+else:
+    print("As médias dos grupos são diferentes.")
+
+# Exibindo as médias para cada grupo
+print("Médias para cada grupo:")
+print("Grupo 1:", means_group1)
+print("Grupo 2:", means_group2)
+print()
+
+# Realizando o teste ANOVA
+anova_results = f_oneway(group1, group2)
+
+# Definindo os nomes das variáveis
+variables = ['activity_days', 'driving_days', 'device_iPhone', 'drives', 'sessions', 'total_navigations_fav2', 'total_navigations_fav1', 'n_days_after_onboarding', \
+                                        'total_sessions', 'duration_minutes_drives', 'driven_km_drives']
+
+# Exibindo o resultado da ANOVA com os nomes das variáveis
+for i, variable in enumerate(variables):
+    print(f"Variável: {variable}")
+    print("Estatística F:", anova_results.statistic[i])
+    print("Valor p:", anova_results.pvalue[i])
+    print()
+
+#Fazendo os testes Post hoc
+
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+# Lista das variáveis
+variables = ['activity_days', 'driving_days', 'device_iPhone', 'drives', 'sessions', 'total_navigations_fav2', 'total_navigations_fav1', 'n_days_after_onboarding', \
+                                        'total_sessions', 'duration_minutes_drives', 'driven_km_drives']
+
+# Realizando o teste de Tukey para cada variável
+for variable in variables:
+    # Separando os dados em cada grupo para a variável atual
+    group1 = df[df['label_retained'] == 0][variable]
+    group2 = df[df['label_retained'] == 1][variable]
+
+    # Concatenando os dados de todos os grupos para a variável atual
+    all_data = np.concatenate([group1.values, group2.values])
+
+    # Criando os rótulos dos grupos para a variável atual
+    labels = ['grupo1'] * len(group1) + ['grupo2'] * len(group2)
+
+    # Realizando o teste de Tukey para a variável atual
+    tukey_results = pairwise_tukeyhsd(endog=all_data, groups=labels)
+
+    # Exibindo os resultados do teste de Tukey para a variável atual
+    print(f"Resultados do teste de Tukey para a variável '{variable}':")
+    print(tukey_results)
+    print()
+
+from scipy.stats import normaltest
+from statsmodels.stats.multitest import multipletests
+
+# Calculando os p-valores para o teste de normalidade em cada variável
+p_values = []
+for column in X.columns:
+    stat, p_value = normaltest(X[column])
+    p_values.append(p_value)
+
+# Corrigindo os p-valores para múltiplas comparações usando o método de Bonferroni
+corrected_p_values = multipletests(p_values, method='bonferroni')[1]
+
+# Exibindo os p-valores corrigidos com os nomes das variáveis
+print("P-valores corrigidos:")
+for i, column in enumerate(X.columns):
+    print(f"{column}: {corrected_p_values[i]}")
+
+import numpy as np
+import matplotlib.pyplot as plt
+import itertools
+
+# Calculando a matriz de confusão
+conf_matrix = confusion_matrix(y, y_pred)
+
+# Plotando a matriz de confusão
+plt.figure(figsize=(8, 6))
+plt.imshow(conf_matrix, interpolation='nearest', cmap=plt.cm.Blues)
+plt.title('Matriz de Confusão')
+plt.colorbar()
+tick_marks = np.arange(len(np.unique(y)))
+plt.xticks(tick_marks, np.unique(y), rotation=45)
+plt.yticks(tick_marks, np.unique(y))
+plt.ylabel('Classe Verdadeira')
+plt.xlabel('Classe Predita')
+
+# Adicionando os valores nos quadrados
+thresh = conf_matrix.max() / 2.
+for i, j in itertools.product(range(conf_matrix.shape[0]), range(conf_matrix.shape[1])):
+    plt.text(j, i, format(conf_matrix[i, j], 'd'),
+             horizontalalignment="center",
+             color="white" if conf_matrix[i, j] > thresh else "black")
+
+plt.tight_layout()
+plt.show()
+
+# Calcula a matriz de confusão
+conf_matrix = confusion_matrix(y, y_pred)
+
+# Calcula o total de observações
+total_observations = np.sum(conf_matrix)
+
+# Calcula o total de acertos (soma da diagonal principal)
+total_acertos = np.trace(conf_matrix)
+
+# Calcula o total de erros (subtrai o total de acertos do total de observações)
+total_erros = total_observations - total_acertos
+
+# Calcula a porcentagem de acertos e erros
+percent_acertos = (total_acertos / total_observations) * 100
+percent_erros = (total_erros / total_observations) * 100
+
+# Exibe os resultados
+print("Total de acertos:", total_acertos)
+print("Total de erros:", total_erros)
+print("Porcentagem de acertos: {:.2f}%".format(percent_acertos))
+print("Porcentagem de erros: {:.2f}%".format(percent_erros))
